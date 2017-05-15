@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"flag"
+	"log"
 	"os"
 	"os/signal"
 	"sync"
@@ -13,58 +15,45 @@ import (
 )
 
 type Producer struct {
-	Limit          int
-	AmqpConnection *amqp.Connection
-	AmqpChannel    *amqp.Channel
-	RabbitURL      string
-	Queue          string
+	Limit int
+	Amqp
 }
 
 func NewProducer(limit int, rabbitURL string, queue string) *Producer {
-	return &Producer{Limit: limit, RabbitURL: rabbitURL, Queue: queue}
-}
-
-func (p Producer) Send(record []string) {
-	return
-}
-
-func (p Producer) Close() {
-	if p.AmqpChannel != nil {
-		err := p.AmqpChannel.Close()
-		check(err)
-	}
-
-	if p.AmqpConnection != nil {
-		err := p.AmqpConnection.Close()
-		check(err)
+	return &Producer{
+		Limit: limit,
+		Amqp: Amqp{
+			RabbitURL: rabbitURL,
+			Queue:     queue,
+		},
 	}
 }
 
-func (p *Producer) initRabbit() {
-	conn, err := amqp.Dial(p.RabbitURL)
-	check(err)
-	p.AmqpConnection = conn
+func (p Producer) send(record []string) error {
+	user := User{
+		Email:    record[0],
+		FullName: record[1],
+	}
 
-	ch, err := conn.Channel()
-	check(err)
-	p.AmqpChannel = ch
+	body, err := json.Marshal(user)
+	if err != nil {
+		return err
+	}
 
-	_, err = p.AmqpChannel.QueueDeclare(
+	return p.AmqpChannel.Publish(
+		"",
 		p.Queue,
-		true,
 		false,
-		true,
-		true,
-		nil,
+		false,
+		amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		},
 	)
-	check(err)
 }
 
-func (p Producer) Run() {
-	defer p.Close()
-
-	(&p).initRabbit()
-
+func (p Producer) readRecords() [][]string {
 	filePath := flag.Arg(0)
 
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0644)
@@ -74,43 +63,76 @@ func (p Producer) Run() {
 	records, err := r.ReadAll()
 	check(err)
 
+	return records
+}
+
+func (p Producer) Run() {
+	defer p.Close()
+
+	(&p).InitRabbit()
+
+	records := p.readRecords()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	recordsChan := make(chan []string, p.Limit)
+
 	var wg sync.WaitGroup
 
+	go func() {
+		log.Printf("Found %v records", len(records))
+
+		defer close(recordsChan)
+
+		for _, record := range records {
+			recordsChan <- record
+		}
+	}()
+
 	for i := 0; i < p.Limit; i++ {
-		go func(ctx context.Context, recordsChan chan []string) {
-			wg.Add(1)
+		wg.Add(1)
+
+		go func() {
 			defer wg.Done()
 
-			select {
-			case <-ctx.Done():
-				return
-			case record := <-recordsChan:
-				p.Send(record)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case record, ok := <-recordsChan:
+					if !ok {
+						return
+					}
+
+					err := p.send(record)
+					if err != nil {
+						log.Printf("Error during send, retrying.\n%v", err)
+						recordsChan <- record
+					}
+				}
 			}
-		}(ctx, recordsChan)
+		}()
 	}
 
-	for _, record := range records {
-		recordsChan <- record
-	}
-
-	cancelChan := make(chan os.Signal, 1)
+	cancelChan := make(chan os.Signal)
 	signal.Notify(cancelChan, os.Interrupt, syscall.SIGTERM)
 
 	doneChan := make(chan struct{})
 
 	go func() {
-		select {
-		case <-cancelChan:
-			cancel()
-			os.Exit(1)
-		case <-doneChan:
-			return
+		for {
+			select {
+			case <-cancelChan:
+				log.Println("Cancelling sending data")
+				cancel()
+				return
+			case <-doneChan:
+				return
+			}
 		}
 	}()
 
+	log.Println("Sending data...")
 	wg.Wait()
-	doneChan <- struct{}{}
+	log.Println("Sending is finished")
+	close(doneChan)
 }

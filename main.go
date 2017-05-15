@@ -15,6 +15,11 @@ type Service interface {
 	Run()
 }
 
+type User struct {
+	Email    string `json:"email"`
+	FullName string `json:"fullname"`
+}
+
 func main() {
 	isConsumer := flag.Bool("consumer", false, "if consumer should be started")
 	isProducer := flag.Bool("producer", false, "if producer should be started")
@@ -22,14 +27,14 @@ func main() {
 	limit := flag.Int("limit", 10, "limit number of concurrent requests")
 	rabbitURL := flag.String(
 		"consumer url",
-		"http://localhost:5672",
+		"amqp://localhost:5672",
 		"url for consumer",
 	)
 	queue := flag.String("queue", "simple", "Exchange queue name")
 
 	flag.Parse()
 
-	if isConsumer == isProducer {
+	if *isConsumer == *isProducer {
 		log.Fatalln("Only one consumer or producer should be started")
 	}
 
