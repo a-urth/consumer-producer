@@ -31,6 +31,11 @@ func main() {
 		"url for consumer",
 	)
 	queue := flag.String("queue", "simple", "Exchange queue name")
+	db := flag.String(
+		"db",
+		"postgresql://postgres:postgres@127.0.0.1:5432/simple",
+		"Db url",
+	)
 
 	flag.Parse()
 
@@ -40,7 +45,7 @@ func main() {
 
 	var service Service
 	if *isConsumer {
-		service = NewConsumer(*limit, *rabbitURL, *queue)
+		service = NewConsumer(*limit, *rabbitURL, *queue, *db)
 	} else {
 		service = NewProducer(*limit, *rabbitURL, *queue)
 	}
