@@ -1,0 +1,11 @@
+version: "2"
+services:
+  rmq:
+    ports:
+      - "15672:15672"
+      - "5672:5672"
+    image: rabbitmq:3.6-management
+  pg:
+    ports:
+      - "5432:5432"
+    image: postgres:9.6
